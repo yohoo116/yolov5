@@ -25,6 +25,9 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import torch_tpu
+from torch_tpu.dynamo import aot_backend
+
 try:
     import comet_ml  # must be imported before torch (if installed)
 except ImportError:
@@ -197,7 +200,7 @@ def train(hyp, opt, device, callbacks):
 
     # Config
     plots = not evolve and not opt.noplots  # create plots
-    cuda = device.type != "cpu"
+    cuda = device.type != "cuda"
     init_seeds(opt.seed + 1 + RANK, deterministic=True)
     with torch_distributed_zero_first(LOCAL_RANK):
         data_dict = data_dict or check_dataset(data)  # check if None
@@ -257,7 +260,6 @@ def train(hyp, opt, device, callbacks):
             return (1 - x / epochs) * (1.0 - hyp["lrf"]) + hyp["lrf"]  # linear
 
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)  # plot_lr_scheduler(optimizer, scheduler, epochs)
-
     # EMA
     ema = ModelEMA(model) if RANK in {-1, 0} else None
 
@@ -297,7 +299,7 @@ def train(hyp, opt, device, callbacks):
         image_weights=opt.image_weights,
         quad=opt.quad,
         prefix=colorstr("train: "),
-        shuffle=True,
+        shuffle=False,
         seed=opt.seed,
     )
     labels = np.concatenate(dataset.labels, 0)
@@ -352,7 +354,10 @@ def train(hyp, opt, device, callbacks):
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    if opt.device == "tpu":
+        scaler = torch_tpu.tpu.amp.GradScaler(enabled=amp, allow_fp16=True)
+    else:
+        scaler = torch.cuda.amp.GradScaler(enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
     compute_loss = ComputeLoss(model)  # init loss class
     callbacks.run("on_train_start")
@@ -384,6 +389,8 @@ def train(hyp, opt, device, callbacks):
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
+        if opt.compile:
+            model_opt = torch.compile(model, backend=aot_backend, dynamic=None, fullgraph=False)
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             callbacks.run("on_train_batch_start")
             ni = i + nb * epoch  # number integrated batches (since train start)
@@ -410,7 +417,10 @@ def train(hyp, opt, device, callbacks):
 
             # Forward
             with torch.cuda.amp.autocast(amp):
-                pred = model(imgs)  # forward
+                if opt.compile:
+                    pred = model_opt(imgs)
+                else:
+                    pred = model(imgs)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
@@ -569,7 +579,7 @@ def parse_opt(known=False):
     parser.add_argument("--data", type=str, default=ROOT / "data/coco128.yaml", help="dataset.yaml path")
     parser.add_argument("--hyp", type=str, default=ROOT / "data/hyps/hyp.scratch-low.yaml", help="hyperparameters path")
     parser.add_argument("--epochs", type=int, default=100, help="total training epochs")
-    parser.add_argument("--batch-size", type=int, default=16, help="total batch size for all GPUs, -1 for autobatch")
+    parser.add_argument("--batch-size", type=int, default=8, help="total batch size for all GPUs, -1 for autobatch")
     parser.add_argument("--imgsz", "--img", "--img-size", type=int, default=640, help="train, val image size (pixels)")
     parser.add_argument("--rect", action="store_true", help="rectangular training")
     parser.add_argument("--resume", nargs="?", const=True, default=False, help="resume most recent training")
@@ -585,7 +595,7 @@ def parse_opt(known=False):
     parser.add_argument("--bucket", type=str, default="", help="gsutil bucket")
     parser.add_argument("--cache", type=str, nargs="?", const="ram", help="image --cache ram/disk")
     parser.add_argument("--image-weights", action="store_true", help="use weighted image selection for training")
-    parser.add_argument("--device", default="", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
+    parser.add_argument("--device", default="", help="cuda device, i.e. 0 or 0,1,2,3 or cpu or tpu")
     parser.add_argument("--multi-scale", action="store_true", help="vary img-size +/- 50%%")
     parser.add_argument("--single-cls", action="store_true", help="train multi-class data as single-class")
     parser.add_argument("--optimizer", type=str, choices=["SGD", "Adam", "AdamW"], default="SGD", help="optimizer")
@@ -602,6 +612,8 @@ def parse_opt(known=False):
     parser.add_argument("--save-period", type=int, default=-1, help="Save checkpoint every x epochs (disabled if < 1)")
     parser.add_argument("--seed", type=int, default=0, help="Global training seed")
     parser.add_argument("--local_rank", type=int, default=-1, help="Automatic DDP Multi-GPU argument, do not modify")
+
+    parser.add_argument("--compile", action="store_true", help="use compile mode")
 
     # Logger arguments
     parser.add_argument("--entity", default=None, help="Entity")

@@ -241,10 +241,11 @@ class ComputeLoss:
 
             # Define
             bc, gxy, gwh, a = t.chunk(4, 1)  # (image, class), grid xy, grid wh, anchors
-            a, (b, c) = a.long().view(-1), bc.long().T  # anchors, image, class
-            gij = (gxy - offsets).long()
+            a, (b, c) = a.int().view(-1), bc.int().T  # anchors, image, class
+            gij = (gxy - offsets).int()
             gi, gj = gij.T  # grid indices
-
+            gi = gi.contiguous()
+            gj = gj.contiguous()
             # Append
             indices.append((b, a, gj.clamp_(0, shape[2] - 1), gi.clamp_(0, shape[3] - 1)))  # image, anchor, grid
             tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
