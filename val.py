@@ -170,7 +170,10 @@ def process_batch(detections, labels, iouv):
     """
     correct = np.zeros((detections.shape[0], iouv.shape[0])).astype(bool)
     iou = box_iou(labels[:, 1:], detections[:, :4])
-    correct_class = labels[:, 0:1] == detections[:, 5]
+    # correct_class = labels[:, 0:1] == detections[:, 5]
+    labels_ = labels[:, 0:1].contiguous()
+    detections_ = detections[:, 5].contiguous()
+    correct_class = labels_ == detections_
     for i in range(len(iouv)):
         x = torch.where((iou >= iouv[i]) & correct_class)  # IoU > threshold and classes match
         if x[0].shape[0]:
