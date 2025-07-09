@@ -26,7 +26,22 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import torch_tpu
-from torch_tpu.dynamo import aot_backend
+try:
+    from torch_tpu.dynamo import aot_backend, dummy_backend
+except:
+    print(f"Warning: tpu dynamo support disabled.")
+
+def get_model_grad(model, save_path="model_grad.npz", save_ = True):
+    grad_dict = {}  
+    for name, param in model.named_parameters():
+        #print(name)
+        if isinstance(param.grad, torch.Tensor):
+            grad_dict[name] = param.grad.cpu().numpy()
+        else:
+            print(name, "has no grad")
+    if save_:
+        np.savez(save_path, **grad_dict)
+    return grad_dict
 
 try:
     import comet_ml  # must be imported before torch (if installed)
@@ -390,7 +405,7 @@ def train(hyp, opt, device, callbacks):
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
         if opt.compile:
-            model_opt = torch.compile(model, backend=aot_backend, dynamic=None, fullgraph=False)
+            model_opt = torch.compile(model, backend=aot_backend if opt.compiler != 'dummy' else dummy_backend, dynamic=None, fullgraph=False)
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             callbacks.run("on_train_batch_start")
             ni = i + nb * epoch  # number integrated batches (since train start)
@@ -613,7 +628,9 @@ def parse_opt(known=False):
     parser.add_argument("--seed", type=int, default=0, help="Global training seed")
     parser.add_argument("--local_rank", type=int, default=-1, help="Automatic DDP Multi-GPU argument, do not modify")
 
+    # compiler 
     parser.add_argument("--compile", action="store_true", help="use compile mode")
+    parser.add_argument("--compiler", type=str, default="aot", help="dummy|aot, dummy for debug")
 
     # Logger arguments
     parser.add_argument("--entity", default=None, help="Entity")
