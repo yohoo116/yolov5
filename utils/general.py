@@ -586,7 +586,7 @@ def check_dataset(data, autodownload=True):
 def check_amp(model):
     """Checks PyTorch AMP functionality for a model, returns True if AMP operates correctly, otherwise False."""
     from models.common import AutoShape, DetectMultiBackend
-
+    return False
     def amp_allclose(model, im):
         """Compares FP32 and AMP model inference outputs, ensuring they are close within a 10% absolute tolerance."""
         m = AutoShape(model, verbose=False)  # model
@@ -1031,7 +1031,7 @@ def non_max_suppression(
         prediction = prediction[0]  # select only inference output
 
     device = prediction.device
-    mps = "mps" in device.type  # Apple MPS
+    mps = "tpu" in device.type  # Apple MPS
     if mps:  # MPS not fully supported yet, convert tensors to CPU before NMS
         prediction = prediction.cpu()
     bs = prediction.shape[0]  # batch size
@@ -1042,7 +1042,7 @@ def non_max_suppression(
     # min_wh = 2  # (pixels) minimum box width and height
     max_wh = 7680  # (pixels) maximum box width and height
     max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
-    time_limit = 0.5 + 0.05 * bs  # seconds to quit after
+    time_limit = 2.5 + 0.05 * bs  # seconds to quit after
     redundant = True  # require redundant detections
     multi_label &= nc > 1  # multiple labels per box (adds 0.5ms/img)
     merge = False  # use merge-NMS

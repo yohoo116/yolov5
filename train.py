@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import torch_tpu
-from torch_tpu.dynamo import aot_backend
+from torch_tpu.dynamo import aot_backend, dummy_backend
 
 try:
     import comet_ml  # must be imported before torch (if installed)
@@ -96,6 +96,7 @@ from utils.torch_utils import (
     smart_resume,
     torch_distributed_zero_first,
 )
+from utils.debug_utils import get_model_grad, get_model_weight
 
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv("RANK", -1))
@@ -429,7 +430,9 @@ def train(hyp, opt, device, callbacks):
 
             # Backward
             scaler.scale(loss).backward()
-
+            torch_tpu.tpu.synchronize()
+            get_model_grad(model.model, save_path=f"grads/model_{opt.compile}_i{ni}__grad.npz")
+            # import pdb; pdb.set_trace()
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
             if ni - last_opt_step >= accumulate:
                 scaler.unscale_(optimizer)  # unscale gradients
@@ -531,7 +534,7 @@ def train(hyp, opt, device, callbacks):
                         data_dict,
                         batch_size=batch_size // WORLD_SIZE * 2,
                         imgsz=imgsz,
-                        model=attempt_load(f, device).half(),
+                        model=attempt_load(f, device),     #.half(),
                         iou_thres=0.65 if is_coco else 0.60,  # best pycocotools at iou 0.65
                         single_cls=single_cls,
                         dataloader=val_loader,
